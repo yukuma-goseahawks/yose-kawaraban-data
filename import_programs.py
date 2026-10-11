@@ -188,11 +188,12 @@ def load_members():
             continue
         for m in re.finditer(r'href="(/members/[A-Za-z0-9_-]{6,})">(.*?)</a>', s, re.S):
             parts = re.findall(r"<ruby>([^<]+)<rt>([^<]*)</rt>", m.group(2))
-            if parts:
+            if parts and plausible_name("".join(p for p, _ in parts)):
                 ms.add("".join(p for p, _ in parts), RK, "https://www.rakugo-kyokai.jp" + m.group(1), cat,
                        kana="".join(k for _, k in parts))
     # 落語芸術協会
-    gk_cat = {"1": "rakugo", "2": "rakugo", "3": "rakugo", "4": "rakugo", "5": "iromono", "8": "kodan", "9": "rokyoku",
+    # 講談・浪曲・色物を先に読む（真打の一覧にも載っている人がいるため、専門の区分を優先）
+    gk_cat = {"8": "kodan", "9": "rokyoku", "5": "iromono", "1": "rakugo", "2": "rakugo", "3": "rakugo", "4": "rakugo",
               "0": None, "6": None}
     for disp, cat in gk_cat.items():
         try:
@@ -202,8 +203,18 @@ def load_members():
             continue
         for m in re.finditer(r'href="(https://www\.geikyo\.com/profile/detail\?id=\d+)"[^>]*>(.*?)</a>', s, re.S):
             name = squash(text_of(m.group(2)))
-            if name and m.group(1) not in ms.by_url:
-                ms.add(name, GK, m.group(1), cat)
+            # ふりがな・芸種は同じ行の次のセル。「塙 宣之（ナイツ）」の括弧内のグループには付けない
+            in_group = "（" in s[max(0, m.start() - 80):m.start()].split("<td")[-1]
+            after = s[m.end():m.end() + 600].split("</tr>")[0]
+            cells = [squash(text_of(c)) for c in re.findall(r"<td[^>]*>([^<]*)</td>", after)]
+            kana = cells[0] if cells and not in_group else ""
+            if not re.fullmatch(r"[\u3040-\u309Fー・]+", kana):
+                kana = ""
+            genre = cells[1] if len(cells) > 1 else ""
+            if name and plausible_name(name) and m.group(1) not in ms.by_url:
+                # 名簿の芸種の列（講談・落語・漫才など）で分類する。真打の一覧には講談師も載っているため
+                ms.add(name, GK, m.group(1), category_of(genre) or cat, kana=kana)
+                ms.by_url[m.group(1)]["genre"] = genre
     return ms
 
 
@@ -266,6 +277,8 @@ def label_split(line):
 
 
 def plausible_name(name):
+    if set(name) <= set("ー－-―─‐・ 　"):
+        return False  # 名簿の区切り線など
     if not 1 <= len(name) <= 14 or re.search(r"[0-9０-９（）()『』「」：:【】]", name):
         return False
     return not any(w in name for w in ("口上", "番組", "前座", "仲入", "お囃子"))
@@ -837,7 +850,11 @@ def build(programs, members, previous=None, previous_list=()):
     for i, (name, info) in enumerate(sorted(performers.items())):
         m = info["member"]
         genre = genres[name].most_common(1)[0][0] if genres[name] else None
-        cat = category_of(genre) or (m and m["category"]) or "rakugo"
+        # 分類は協会の名簿の区分を優先（番組によって芸種の書き方がまちまちなため）
+        member_cat = m and m["category"]
+        cat = member_cat or category_of(genre) or "rakugo"
+        if genre and category_of(genre) != cat:
+            genre = None  # 名簿の区分と合わない芸種表記は使わない
         assoc = m["assoc"] if m else None
         profile_url = (m and m["url"]) or info["url"]
         sources = []
@@ -851,7 +868,8 @@ def build(programs, members, previous=None, previous_list=()):
             sources.append({"kind": "association", "title": f"{aname} プロフィール", "url": profile_url,
                             "checkedAt": TODAY.isoformat()})
         assoc_name = {RK: "落語協会", GK: "落語芸術協会"}.get(assoc)
-        genre_label = genre or {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}[cat]
+        member_genre = m.get("genre") if (m and category_of(m.get("genre") or "") == cat) else None
+        genre_label = genre or member_genre or {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}[cat]
         profile = (f"{assoc_name}所属。" if assoc_name else "") + f"芸種は{genre_label}。"
         out_performers.append({
             "id": name, "name": name, "kana": (m and m.get("kana")) or "", "category": cat, "genre": genre_label,
@@ -872,6 +890,7 @@ def build(programs, members, previous=None, previous_list=()):
             continue
         listed.add(name)
         cat = m["category"] or "rakugo"
+        genre = m.get("genre") if m.get("genre") and category_of(m["genre"]) == cat else label[cat]
         assoc_name = {RK: "落語協会", GK: "落語芸術協会"}[m["assoc"]]
         links = previous_links.get(name, [])
         if name not in links_checked and budget > 0:
@@ -879,8 +898,8 @@ def build(programs, members, previous=None, previous_list=()):
             links = official_links(m["url"], links)
             links_checked[name] = TODAY.isoformat()
         out_performers.append({
-            "id": name, "name": name, "kana": m.get("kana") or "", "category": cat, "genre": label[cat],
-            "associationID": m["assoc"], "profile": f"{assoc_name}所属。芸種は{label[cat]}。",
+            "id": name, "name": name, "kana": m.get("kana") or "", "category": cat, "genre": genre,
+            "associationID": m["assoc"], "profile": f"{assoc_name}所属。芸種は{genre}。",
             "sources": links + [{"kind": "association", "title": f"{assoc_name} プロフィール",
                                  "url": m["url"], "checkedAt": TODAY.isoformat()}],
             "linksCheckedAt": links_checked.get(name),
