@@ -822,9 +822,11 @@ def build(programs, members, previous=None, previous_list=()):
     performances = unique
 
     # 演者の情報（公式リンクは前回の確認結果を使い回す。日曜と --refresh-links のときは確認し直す）
-    previous_links = {}
+    previous_links, links_checked = {}, {}
     for prev in previous_list:
         for pp in prev.get("performers", []):
+            if pp.get("linksCheckedAt"):
+                links_checked[pp["id"]] = max(links_checked.get(pp["id"], ""), pp["linksCheckedAt"])
             merged = {x["url"]: x for x in previous_links.get(pp["id"], [])}
             for x in pp.get("sources", []):
                 if x.get("kind") != "association":
@@ -844,6 +846,7 @@ def build(programs, members, previous=None, previous_list=()):
                 sources += previous_links[name]
             else:
                 sources += official_links(profile_url, previous_links.get(name, []))
+                links_checked[name] = TODAY.isoformat()
             aname = "落語協会" if "rakugo-kyokai" in profile_url else "落語芸術協会" if "geikyo" in profile_url else "協会"
             sources.append({"kind": "association", "title": f"{aname} プロフィール", "url": profile_url,
                             "checkedAt": TODAY.isoformat()})
@@ -853,9 +856,36 @@ def build(programs, members, previous=None, previous_list=()):
         out_performers.append({
             "id": name, "name": name, "kana": (m and m.get("kana")) or "", "category": cat, "genre": genre_label,
             "associationID": assoc, "profile": profile, "sources": sources,
+            "linksCheckedAt": links_checked.get(name),
         })
         if (i + 1) % 50 == 0:
             print(f"  演者 {i + 1}/{len(performers)}", file=sys.stderr)
+
+    # 番組に出ない人も、両協会の名簿にいれば一覧に入れる（先に好き・苦手を登録できるように）。
+    # 負担を抑えるため、公式リンクは前回までに確かめた結果を使い、まだの人は1回に --member-links 人まで確かめる。
+    listed = {p["id"] for p in out_performers}
+    label = {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}
+    budget = args.member_links  # まだ確かめていない人を1回にこの人数まで
+    for m in sorted(members.by_url.values(), key=lambda m: m["name"]):
+        name = m["name"]
+        if name in listed or not plausible_name(name):
+            continue
+        listed.add(name)
+        cat = m["category"] or "rakugo"
+        assoc_name = {RK: "落語協会", GK: "落語芸術協会"}[m["assoc"]]
+        links = previous_links.get(name, [])
+        if name not in links_checked and budget > 0:
+            budget -= 1
+            links = official_links(m["url"], links)
+            links_checked[name] = TODAY.isoformat()
+        out_performers.append({
+            "id": name, "name": name, "kana": m.get("kana") or "", "category": cat, "genre": label[cat],
+            "associationID": m["assoc"], "profile": f"{assoc_name}所属。芸種は{label[cat]}。",
+            "sources": links + [{"kind": "association", "title": f"{assoc_name} プロフィール",
+                                 "url": m["url"], "checkedAt": TODAY.isoformat()}],
+            "linksCheckedAt": links_checked.get(name),
+        })
+    out_performers.sort(key=lambda p: p["id"])
 
     dates = [x["date"] for x in performances]
     return {
@@ -908,6 +938,8 @@ def main():
     ap.add_argument("--previous", action="append", default=[],
                     help="前回の ProgramData.json（公式リンクの使い回しと、取得失敗時の予備）。複数指定可、最初のものを予備に使う")
     ap.add_argument("--refresh-links", action="store_true", help="公式リンクをすべて確認し直す")
+    ap.add_argument("--member-links", type=int, default=40,
+                    help="番組に出ない演者の公式リンクを、まだ確かめていない人から1回にこの人数まで確かめる")
     args = ap.parse_args()
     previous_list = []
     for path in [Path(x) for x in args.previous] or [Path(args.out)]:
