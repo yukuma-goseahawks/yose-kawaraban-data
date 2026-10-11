@@ -59,7 +59,7 @@ def fetch(url, *, cache=True):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=20) as r:
                 raw = r.read()
             break
         except Exception:
@@ -195,7 +195,11 @@ def load_members():
     gk_cat = {"1": "rakugo", "2": "rakugo", "3": "rakugo", "4": "rakugo", "5": "iromono", "8": "kodan", "9": "rokyoku",
               "0": None, "6": None}
     for disp, cat in gk_cat.items():
-        s = fetch(f"https://www.geikyo.com/profile/index?disp={disp}")
+        try:
+            s = fetch(f"https://www.geikyo.com/profile/index?disp={disp}")
+        except Exception as e:
+            print(f"  落語芸術協会の名簿 disp={disp}: 取得できません（{e!r}）", file=sys.stderr)
+            continue
         for m in re.finditer(r'href="(https://www\.geikyo\.com/profile/detail\?id=\d+)"[^>]*>(.*?)</a>', s, re.S):
             name = squash(text_of(m.group(2)))
             if name and m.group(1) not in ms.by_url:

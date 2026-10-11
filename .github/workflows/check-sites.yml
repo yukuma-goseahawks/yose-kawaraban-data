@@ -1,0 +1,13 @@
+# 取得元のサイトに GitHub のサーバーから接続できるかを確かめる（手動実行）
+name: 取得元の接続確認
+on: workflow_dispatch
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for u in https://rakugo.or.jp/ http://suehirotei.com/ https://www.asakusaengei.com/schedule/ \
+                   https://www.rakugo-kyokai.jp/joseki/ikebukuro https://www.geikyo.com/schedule/index \
+                   https://www.geikyo.com/profile/index?disp=1; do
+            printf "%s " "$u"; curl -s -o /dev/null -m 20 -w "%{http_code} %{time_total}s\n" "$u" || echo "失敗"
+          done
