@@ -110,7 +110,7 @@ def squash(s):
     s = re.sub(r"\s+", "", s)
     # カタカナの後の長音もどき（－ - ―）を「ー」に
     s = re.sub(r"(?<=[゠-ヿ぀-ゟ])[-－―−]", "ー", s)
-    return s
+    return s.replace("&", "＆")
 
 
 def match_key(name):
@@ -206,6 +206,8 @@ def load_members():
             # ふりがな・芸種は同じ行の次のセル。「塙 宣之（ナイツ）」の括弧内のグループには付けない
             in_group = "（" in s[max(0, m.start() - 80):m.start()].split("<td")[-1]
             after = s[m.end():m.end() + 600].split("</tr>")[0]
+            if not in_group and "（" in after.split("</td>")[0]:
+                continue  # 「宮田 陽（宮田陽・昇）」のメンバー個人は載せず、コンビだけにする
             cells = [squash(text_of(c)) for c in re.findall(r"<td[^>]*>([^<]*)</td>", after)]
             kana = cells[0] if cells and not in_group else ""
             if not re.fullmatch(r"[\u3040-\u309Fー・]+", kana):
@@ -229,6 +231,7 @@ class Entry:
         self.days = set(days) if days else None   # 出演する日（None = 全日）
         self.absent = set()                       # 休演の日
         self.subs = {}                            # 日 -> 代演者の名前
+        self.genre = None                         # この人の芸種（Act と違う場合）
 
 
 class Act:
@@ -319,6 +322,8 @@ def parse_suzumoto_page(url):
         if not plausible_name(name) or label in ("開口一番",):
             continue
         entry = Entry(name)
+        if label and label != "交代出演":
+            entry.genre = label  # 交互出演で芸種が違う場合（ウクレレ漫談／ものまね）
         if "出演" in info:
             entry.days = set(days_in(info))
         elif "休演" in info:
@@ -478,7 +483,10 @@ def asakusa_programs():
                     entries = [Entry(join_duo([family + names[1][0]] + [family + x for x in names[1][1:]]))]
                 else:
                     flat = [x for n in names for x in n]
-                    entries = [Entry(join_duo(flat) if len(flat) > 1 else flat[0])]
+                    if len(flat) > 1 and all(x.startswith("＆") for x in flat[1:]):
+                        entries = [Entry("".join(flat))]  # 「北見伸」「＆スティファニー」
+                    else:
+                        entries = [Entry(join_duo(flat) if len(flat) > 1 else flat[0])]
                 acts.append(Act(squash(text_of(genre)), entries, alternating=alternating, tori=tori))
             if acts:
                 if not any(a.tori for a in acts):
@@ -671,6 +679,14 @@ GENERIC = re.compile(r"maps\.app\.goo\.gl|twitter\.com/rakugokyokai|x\.com/rakug
                      r"jquery|cdn|fonts\.")
 
 
+PROFILE_GEISHU = {}  # 協会プロフィールに載っている芸種（落語協会）
+
+
+def profile_geishu(page):
+    m = re.search(r'\\"geishu\\":\\"([^"\\]+)\\"', page)
+    return squash(m.group(1)) if m else None
+
+
 def official_links(profile_url, known=()):
     """協会プロフィールに載っている公式サイト・SNS。開けることを確かめたものだけ。
     以前に確認できたリンク（known）は、今回開けなくても残す（GitHub のサーバーは海外なので、
@@ -681,7 +697,9 @@ def official_links(profile_url, known=()):
     try:
         s = fetch(profile_url)
     except Exception:
-        return []
+        return list(known.values())
+    if profile_geishu(s):
+        PROFILE_GEISHU[profile_url] = profile_geishu(s)
     links = []
     for u in re.findall(r'href="(https?://[^"\s]+)\s*"', s):
         u = u.strip()
@@ -748,8 +766,8 @@ def build(programs, members, previous=None, previous_list=()):
         for a in p.acts:
             for e in a.entries:
                 e.name = canon(e.name, e.url)
-                if a.genre:
-                    genres[e.name][a.genre] += 1
+                if e.genre or a.genre:
+                    genres[e.name][e.genre or a.genre] += 1
                 e.subs = {d: canon(n) for d, n in e.subs.items()}
 
     # 公演（日ごと）
@@ -835,9 +853,11 @@ def build(programs, members, previous=None, previous_list=()):
     performances = unique
 
     # 演者の情報（公式リンクは前回の確認結果を使い回す。日曜と --refresh-links のときは確認し直す）
-    previous_links, links_checked = {}, {}
+    previous_links, links_checked, prev_geishu = {}, {}, {}
     for prev in previous_list:
         for pp in prev.get("performers", []):
+            if pp.get("geishu"):
+                prev_geishu.setdefault(pp["id"], pp["geishu"])
             if pp.get("linksCheckedAt"):
                 links_checked[pp["id"]] = max(links_checked.get(pp["id"], ""), pp["linksCheckedAt"])
             merged = {x["url"]: x for x in previous_links.get(pp["id"], [])}
@@ -850,11 +870,7 @@ def build(programs, members, previous=None, previous_list=()):
     for i, (name, info) in enumerate(sorted(performers.items())):
         m = info["member"]
         genre = genres[name].most_common(1)[0][0] if genres[name] else None
-        # 分類は協会の名簿の区分を優先（番組によって芸種の書き方がまちまちなため）
         member_cat = m and m["category"]
-        cat = member_cat or category_of(genre) or "rakugo"
-        if genre and category_of(genre) != cat:
-            genre = None  # 名簿の区分と合わない芸種表記は使わない
         assoc = m["assoc"] if m else None
         profile_url = (m and m["url"]) or info["url"]
         sources = []
@@ -868,13 +884,18 @@ def build(programs, members, previous=None, previous_list=()):
             sources.append({"kind": "association", "title": f"{aname} プロフィール", "url": profile_url,
                             "checkedAt": TODAY.isoformat()})
         assoc_name = {RK: "落語協会", GK: "落語芸術協会"}.get(assoc)
-        member_genre = m.get("genre") if (m and category_of(m.get("genre") or "") == cat) else None
-        genre_label = genre or member_genre or {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}[cat]
+        # 芸種・分類は協会の表記（プロフィール・名簿）を優先。番組ごとの書き方はまちまちなため
+        assoc_genre = (profile_url and PROFILE_GEISHU.get(profile_url)) or prev_geishu.get(name) \
+            or (m and m.get("genre")) or None
+        cat = category_of(assoc_genre) or member_cat or category_of(genre) or "rakugo"
+        if genre and category_of(genre) != cat:
+            genre = None  # 協会の区分と合わない番組の芸種表記は使わない
+        genre_label = assoc_genre or genre or {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}[cat]
         profile = (f"{assoc_name}所属。" if assoc_name else "") + f"芸種は{genre_label}。"
         out_performers.append({
             "id": name, "name": name, "kana": (m and m.get("kana")) or "", "category": cat, "genre": genre_label,
             "associationID": assoc, "profile": profile, "sources": sources,
-            "linksCheckedAt": links_checked.get(name),
+            "linksCheckedAt": links_checked.get(name), "geishu": assoc_genre,
         })
         if (i + 1) % 50 == 0:
             print(f"  演者 {i + 1}/{len(performers)}", file=sys.stderr)
@@ -889,20 +910,28 @@ def build(programs, members, previous=None, previous_list=()):
         if name in listed or not plausible_name(name):
             continue
         listed.add(name)
-        cat = m["category"] or "rakugo"
-        genre = m.get("genre") if m.get("genre") and category_of(m["genre"]) == cat else label[cat]
         assoc_name = {RK: "落語協会", GK: "落語芸術協会"}[m["assoc"]]
         links = previous_links.get(name, [])
         if name not in links_checked and budget > 0:
             budget -= 1
             links = official_links(m["url"], links)
             links_checked[name] = TODAY.isoformat()
+        assoc_genre = PROFILE_GEISHU.get(m["url"]) or prev_geishu.get(name) or m.get("genre") or None
+        if not assoc_genre and m["assoc"] == RK and budget > 0 and not args.no_links:
+            # 落語協会は名簿に芸種がないので、プロフィールから読む（読めたら次回からは使い回す）
+            budget -= 1
+            try:
+                assoc_genre = profile_geishu(fetch(m["url"]))
+            except Exception:
+                pass
+        cat = category_of(assoc_genre) or m["category"] or "rakugo"
+        genre = assoc_genre or label[cat]
         out_performers.append({
             "id": name, "name": name, "kana": m.get("kana") or "", "category": cat, "genre": genre,
             "associationID": m["assoc"], "profile": f"{assoc_name}所属。芸種は{genre}。",
             "sources": links + [{"kind": "association", "title": f"{assoc_name} プロフィール",
                                  "url": m["url"], "checkedAt": TODAY.isoformat()}],
-            "linksCheckedAt": links_checked.get(name),
+            "linksCheckedAt": links_checked.get(name), "geishu": assoc_genre,
         })
     out_performers.sort(key=lambda p: p["id"])
 
