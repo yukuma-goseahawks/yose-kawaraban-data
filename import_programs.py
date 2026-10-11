@@ -693,14 +693,14 @@ def official_links(profile_url, known=()):
 
 def build(programs, members, previous=None, previous_list=()):
     venues = [
+        {"id": "asakusa", "name": "浅草演芸ホール", "shortName": "浅草", "kana": "あさくさえんげいほーる", "area": "浅草",
+         "sources": [{"kind": "officialSite", "title": "浅草演芸ホール 公式サイト", "url": "https://www.asakusaengei.com/",
+                      "checkedAt": TODAY.isoformat()}]},
         {"id": "suzumoto", "name": "鈴本演芸場", "shortName": "鈴本", "kana": "すずもとえんげいじょう", "area": "上野",
          "sources": [{"kind": "officialSite", "title": "鈴本演芸場 公式サイト", "url": "https://rakugo.or.jp/",
                       "checkedAt": TODAY.isoformat()}]},
         {"id": "suehirotei", "name": "新宿末廣亭", "shortName": "末廣亭", "kana": "しんじゅくすえひろてい", "area": "新宿",
          "sources": [{"kind": "officialSite", "title": "新宿末廣亭 公式サイト", "url": "http://suehirotei.com/",
-                      "checkedAt": TODAY.isoformat()}]},
-        {"id": "asakusa", "name": "浅草演芸ホール", "shortName": "浅草", "kana": "あさくさえんげいほーる", "area": "浅草",
-         "sources": [{"kind": "officialSite", "title": "浅草演芸ホール 公式サイト", "url": "https://www.asakusaengei.com/",
                       "checkedAt": TODAY.isoformat()}]},
         {"id": "ikebukuro", "name": "池袋演芸場", "shortName": "池袋", "kana": "いけぶくろえんげいじょう", "area": "池袋",
          "sources": [{"kind": "association", "title": "落語協会 定席番組（池袋演芸場）",
