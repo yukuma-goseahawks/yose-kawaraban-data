@@ -36,7 +36,8 @@ jobs:
             -o previous.json || cp data/ProgramData.json previous.json
 
       - name: 番組を取り込む
-        run: python3 import_programs.py --previous previous.json --out public/ProgramData.json
+        # 公開中のデータと、手元で確認したデータ（data/）の両方から公式リンクを引き継ぐ
+        run: python3 import_programs.py --previous previous.json --previous data/ProgramData.json --out public/ProgramData.json
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

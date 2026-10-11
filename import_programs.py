@@ -658,9 +658,13 @@ GENERIC = re.compile(r"maps\.app\.goo\.gl|twitter\.com/rakugokyokai|x\.com/rakug
                      r"jquery|cdn|fonts\.")
 
 
-def official_links(profile_url):
+def official_links(profile_url, known=()):
+    """協会プロフィールに載っている公式サイト・SNS。開けることを確かめたものだけ。
+    以前に確認できたリンク（known）は、今回開けなくても残す（GitHub のサーバーは海外なので、
+    海外からの接続を受け付けないサイトがある）"""
+    known = {x["url"]: x for x in known}
     if args.no_links:
-        return []
+        return list(known.values())
     try:
         s = fetch(profile_url)
     except Exception:
@@ -676,6 +680,8 @@ def official_links(profile_url):
         host = urllib.parse.urlparse(u).netloc.lower().removeprefix("www.")
         sns = next((v for k, v in SNS.items() if host.endswith(k)), None)
         if not link_alive(u):
+            if u in known:
+                out.append(known[u])
             continue
         if sns:
             out.append({"kind": "sns", "title": sns, "url": u, "checkedAt": TODAY.isoformat()})
@@ -685,7 +691,7 @@ def official_links(profile_url):
     return out
 
 
-def build(programs, members, previous=None):
+def build(programs, members, previous=None, previous_list=()):
     venues = [
         {"id": "suzumoto", "name": "鈴本演芸場", "shortName": "鈴本", "kana": "すずもとえんげいじょう", "area": "上野",
          "sources": [{"kind": "officialSite", "title": "鈴本演芸場 公式サイト", "url": "https://rakugo.or.jp/",
@@ -817,8 +823,13 @@ def build(programs, members, previous=None):
 
     # 演者の情報（公式リンクは前回の確認結果を使い回す。日曜と --refresh-links のときは確認し直す）
     previous_links = {}
-    for pp in (previous or {}).get("performers", []):
-        previous_links[pp["id"]] = [x for x in pp.get("sources", []) if x.get("kind") != "association"]
+    for prev in previous_list:
+        for pp in prev.get("performers", []):
+            merged = {x["url"]: x for x in previous_links.get(pp["id"], [])}
+            for x in pp.get("sources", []):
+                if x.get("kind") != "association":
+                    merged.setdefault(x["url"], x)
+            previous_links[pp["id"]] = list(merged.values())
     recheck_links = args.refresh_links or TODAY.weekday() == 6
     out_performers = []
     for i, (name, info) in enumerate(sorted(performers.items())):
@@ -832,7 +843,7 @@ def build(programs, members, previous=None):
             if name in previous_links and not recheck_links:
                 sources += previous_links[name]
             else:
-                sources += official_links(profile_url)
+                sources += official_links(profile_url, previous_links.get(name, []))
             aname = "落語協会" if "rakugo-kyokai" in profile_url else "落語芸術協会" if "geikyo" in profile_url else "協会"
             sources.append({"kind": "association", "title": f"{aname} プロフィール", "url": profile_url,
                             "checkedAt": TODAY.isoformat()})
@@ -894,16 +905,18 @@ def main():
     ap.add_argument("--refresh", action="store_true", help="キャッシュを使わずに取り直す")
     ap.add_argument("--out", default=str(OUT))
     ap.add_argument("--no-links", action="store_true", help="公式リンクの取得・確認を省く（試験用）")
-    ap.add_argument("--previous", help="前回の ProgramData.json（公式リンクの使い回しと、取得失敗時の予備）")
+    ap.add_argument("--previous", action="append", default=[],
+                    help="前回の ProgramData.json（公式リンクの使い回しと、取得失敗時の予備）。複数指定可、最初のものを予備に使う")
     ap.add_argument("--refresh-links", action="store_true", help="公式リンクをすべて確認し直す")
     args = ap.parse_args()
-    previous = None
-    prev_path = Path(args.previous) if args.previous else Path(args.out)
-    if prev_path.exists():
-        try:
-            previous = json.loads(prev_path.read_text(encoding="utf-8"))
-        except Exception:
-            previous = None
+    previous_list = []
+    for path in [Path(x) for x in args.previous] or [Path(args.out)]:
+        if path.exists():
+            try:
+                previous_list.append(json.loads(path.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+    previous = previous_list[0] if previous_list else None
 
     global MEMBERS
     print("協会の名簿を読み込み中…", file=sys.stderr)
@@ -928,7 +941,7 @@ def main():
     if len(failed) == 4:
         print("すべての寄席で取得に失敗したため、書き出しません", file=sys.stderr)
         sys.exit(1)
-    data = build(programs, members, previous)
+    data = build(programs, members, previous, previous_list)
     if failed and previous:
         keep_previous(data, previous, failed)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
