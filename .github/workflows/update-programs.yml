@@ -1,0 +1,46 @@
+# 毎日 1 回、定席4軒の番組を取り込み、GitHub Pages で公開する
+name: 番組データを更新
+
+on:
+  schedule:
+    - cron: "0 21 * * *"   # 毎日 6:00（日本時間）
+  workflow_dispatch:        # 手動でも動かせる
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 前回公開したデータを取得（公式リンクの使い回し・取得失敗時の予備）
+        run: |
+          mkdir -p public
+          curl -fsSL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ProgramData.json" \
+            -o previous.json || cp data/ProgramData.json previous.json
+
+      - name: 番組を取り込む
+        run: python3 import_programs.py --previous previous.json --out public/ProgramData.json
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deploy
+        uses: actions/deploy-pages@v4
