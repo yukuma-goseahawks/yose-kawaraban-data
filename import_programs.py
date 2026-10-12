@@ -117,12 +117,18 @@ def match_key(name):
     """照合用：ひらがな→カタカナ、記号ゆれをそろえる"""
     s = squash(name)
     s = "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in s)
-    for a, b in (("圓", "円"), ("齋", "斎"), ("斉", "斎"), ("髙", "高"), ("檜", "桧"), ("・", ""), ("&", ""), ("＆", "")):
+    for a, b in (("圓", "円"), ("樓", "楼"), ("齋", "斎"), ("斉", "斎"), ("髙", "高"), ("檜", "桧"), ("・", ""), ("&", ""), ("＆", "")):
         s = s.replace(a, b)
     return s
 
 
 MEMBERS = None
+
+# 番組表の表記ゆれ（照合用の表記 → 名簿の表記）
+ALIASES = {match_key(a): b for a, b in [("びり＆ブッチー", "びり＆ブッチィー")]}
+
+# 協会に入っていない講談師（講談協会・日本講談協会）の亭号。名簿で判定できないため名前で講談とする
+KODAN_TEIGO = ("一龍斎", "宝井", "神田", "田辺", "旭堂", "桃川", "松林", "日向")
 
 
 def join_duo(names):
@@ -672,6 +678,18 @@ def category_of(genre):
     return "iromono" if g else None
 
 
+def group_member(members, name):
+    """「翁家勝丸・丸果」のように、名簿にはメンバー個人だけ載っている組。全員が同じ協会にいれば先頭の人を返す"""
+    parts = [x for x in re.split(r"[・＆]", name) if x]
+    if len(parts) < 2:
+        return None
+    first = members.lookup(parts[0])
+    if not first:
+        return None
+    rest = [members.lookup(x) or members.lookup_given(x, first["assoc"]) for x in parts[1:]]
+    return first if all(r and r["assoc"] == first["assoc"] for r in rest) else None
+
+
 SNS = {"x.com": "X", "twitter.com": "X", "facebook.com": "Facebook", "instagram.com": "Instagram",
        "youtube.com": "YouTube", "tiktok.com": "TikTok", "threads.net": "Threads", "note.com": "note"}
 GENERIC = re.compile(r"maps\.app\.goo\.gl|twitter\.com/rakugokyokai|x\.com/rakugokyokai|UCUc7tai_P55ZPGl1m2RcwOg|"
@@ -747,6 +765,7 @@ def build(programs, members, previous=None, previous_list=()):
     genres = defaultdict(Counter)
 
     def canon(entry_name, url=None):
+        entry_name = ALIASES.get(match_key(entry_name), entry_name)
         m = members.lookup(entry_name, url)
         name = m["name"] if m else squash(entry_name)
         if name not in performers:
@@ -870,8 +889,9 @@ def build(programs, members, previous=None, previous_list=()):
     for i, (name, info) in enumerate(sorted(performers.items())):
         m = info["member"]
         genre = genres[name].most_common(1)[0][0] if genres[name] else None
-        member_cat = m and m["category"]
-        assoc = m["assoc"] if m else None
+        group = None if m else group_member(members, name)  # 名簿にはメンバー個人だけ載っている組
+        member_cat = (m and m["category"]) or (group and group["category"])
+        assoc = (m or group or {}).get("assoc")
         profile_url = (m and m["url"]) or info["url"]
         sources = []
         if profile_url:
@@ -887,7 +907,8 @@ def build(programs, members, previous=None, previous_list=()):
         # 芸種・分類は協会の表記（プロフィール・名簿）を優先。番組ごとの書き方はまちまちなため
         assoc_genre = (profile_url and PROFILE_GEISHU.get(profile_url)) or prev_geishu.get(name) \
             or (m and m.get("genre")) or None
-        cat = category_of(assoc_genre) or member_cat or category_of(genre) or "rakugo"
+        kodan = not m and match_key(name).startswith(KODAN_TEIGO) and "kodan"
+        cat = category_of(assoc_genre) or member_cat or kodan or category_of(genre) or "rakugo"
         if genre and category_of(genre) != cat:
             genre = None  # 協会の区分と合わない番組の芸種表記は使わない
         genre_label = assoc_genre or genre or {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}[cat]
