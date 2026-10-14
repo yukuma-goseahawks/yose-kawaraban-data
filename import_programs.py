@@ -290,7 +290,7 @@ def plausible_name(name):
         return False  # 名簿の区切り線など
     if not 1 <= len(name) <= 14 or re.search(r"[0-9０-９（）()『』「」：:【】]", name):
         return False
-    return not any(w in name for w in ("口上", "番組", "前座", "仲入", "お囃子"))
+    return not any(w in name for w in ("口上", "番組", "前座", "仲入", "中入", "お囃子"))
 
 
 def parse_suzumoto_page(url):
