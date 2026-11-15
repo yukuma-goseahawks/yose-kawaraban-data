@@ -111,7 +111,7 @@ def squash(s):
     s = re.sub(r"\s+", "", s).replace("\0", " ")
     # カタカナの後の長音もどき（－ - ―）を「ー」に
     s = re.sub(r"(?<=[゠-ヿ぀-ゟ])[-－―−]", "ー", s)
-    return s.replace("&", "＆").replace("~", "～")
+    return s.replace("&", "＆").replace("~", "〜")
 
 
 def match_key(name):
