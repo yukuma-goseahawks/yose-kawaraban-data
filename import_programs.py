@@ -107,10 +107,11 @@ def text_of(fragment):
 def squash(s):
     """空白を除いた表示用の名前"""
     s = unicodedata.normalize("NFKC", html.unescape(s))
-    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"(?<=[A-Za-z])\s+(?=[A-Za-z])", "\0", s)  # 「TOKYO COOL」の空白は残す
+    s = re.sub(r"\s+", "", s).replace("\0", " ")
     # カタカナの後の長音もどき（－ - ―）を「ー」に
     s = re.sub(r"(?<=[゠-ヿ぀-ゟ])[-－―−]", "ー", s)
-    return s.replace("&", "＆")
+    return s.replace("&", "＆").replace("~", "～")
 
 
 def match_key(name):
@@ -396,7 +397,7 @@ def suzumoto_programs():
 def suehirotei_programs():
     base = "http://suehirotei.com/"
     top = fetch(base)
-    pages = sorted(set(re.findall(r'href="(\d{1,2}(?:kami|naka|shimo)\.html)"', top)))
+    pages = sorted(set(re.findall(r'href="(\d{1,2}(?:kami|naka|shimo)(?:\.html|/index\.html|/))"', top)))
     out = []
     for p in pages:
         url = base + p
@@ -424,8 +425,10 @@ def suehirotei_programs():
                 name_html = re.sub(r'<span class="futatsume">.*?</span>', "", name_html, flags=re.S)
                 name = squash(text_of(re.sub(r'<span class="text-danger">.*?</span>', "", name_html)))
                 name = re.sub(r"^(壽)?(二ツ目昇進|真打昇進)", "", name)
-                if not name or "仲入" in name:
-                    continue
+                if not name or "仲入" in name or re.search(r"特集|長講", name):
+                    continue  # 「名作落語特集 長講一席」のような見出し
+                if name.endswith("交互") and not link:
+                    name = "出演者未定"  # 「立川流交互」：誰が出るか書かれていない
                 entry = Entry(name, link.group(1) if link else None,
                               days_in(dates.group(1)) if dates else (days_in(marker) if marker.endswith("日") else None))
                 if marker == "交互":
@@ -463,43 +466,115 @@ def asakusa_programs():
         y, mo, d = map(int, dm.groups())
         if dt.date(y, mo, d) < TODAY:
             continue
-        for part in re.split(r'<li class="f\d">', s)[1:]:
-            slot = "day" if "昼の部" in part[:300] else "night"
-            acts = []
-            for row in re.findall(r"<tr><th><p>(.*?)</p></th><td>(.*?)</table></td></tr>", part, re.S):
-                genre, td = row
-                tori = "主任" in td.split("<table")[0]
-                inner = td[td.find("<table"):]
-                cells = [c for c in re.findall(r"<td[^>]*>(.*?)</td>", inner, re.S)]
-                alternating = "（交互）" in inner
-                texts = [c for c in cells if "<img" not in c and "交互" not in c]
-                names = []
-                for c in texts:
-                    parts = [squash(text_of(x)) for x in re.split(r"<br\s*/?>", c)]
-                    names.append([p for p in parts if p])
-                names = [n for n in names if n]
-                if not names or any("仲入" in x for n in names for x in n) or any("口上" in x for n in names for x in n):
-                    continue
-                if alternating:
-                    flat = [x for n in names for x in n]
-                    entries = [Entry(x) for x in flat]
-                elif len(names) == 2 and len(names[0]) == 1 and len(names[1]) >= 2:
-                    # 「すず風」「にゃん子<br>金魚」のような組
-                    family = names[0][0]
-                    entries = [Entry(join_duo([family + names[1][0]] + [family + x for x in names[1][1:]]))]
+        out += parse_asakusa_day(s, url, y, mo, d)
+    return out
+
+
+def asakusa_part_slot(text):
+    """「【第一部】」「【引き続き二部】」などの見出し → 昼（1部・2部）／夜（3部以降）。見出しでなければ None"""
+    m = re.fullmatch(r"【[^】]*?([一二三四五1-5])部】", text)
+    if not m:
+        return None
+    return "day" if m.group(1) in "一二12" else "night"
+
+
+def asakusa_note_line(line):
+    """『会の名前』・「第55回」・開場／開演／終演の案内など、出演者ではない行"""
+    return bool(re.fullmatch(r"第\d+回|『.*|.*』", line) or re.search(r"開場|開演|終演", line))
+
+
+def parse_asakusa_day(s, url, y, mo, d):
+    """浅草演芸ホールの1日分のページ。
+
+    ふだんは「昼の部」「夜の部」の2つの欄。年末などの変則日（漫才協会の特別興行）は
+    「1部・2部」「3部」の欄で、2部が欄をまたぐので【第一部】【第二部】【引き続き二部】【第三部】の
+    見出しで分け、1部・2部を昼の部、3部を夜の部とする。左の列は芸種ではなく時刻になっている。
+    """
+    s = s[:s.find('<div class="note_shc"')] if '<div class="note_shc"' in s else s
+    by_parts = any(asakusa_part_slot(squash(text_of(x))) for x in re.findall(r'<td>(【[^<]*】)</td>', s))
+    acts_of = {"day": [], "night": []}
+    parts_of = {"day": [], "night": []}
+    event_of = {"day": None, "night": None}  # 「圓菊一門会」など特別番組の名前
+    slot = "day"
+    for li in re.split(r'<li class="f\d">', s)[1:]:
+        if not by_parts:
+            slot = "day" if "昼の部" in li[:300] else "night"
+        for row in re.findall(r"<tr><th><p>(.*?)</p></th><td>(.*?)</table></td></tr>", li, re.S):
+            genre, td = row
+            genre = squash(text_of(genre))
+            if re.fullmatch(r"\d{1,2}[:：]\d{2}", genre):
+                genre = ""  # 時刻（芸種の表記なし）
+            tori = "主任" in td.split("<table")[0]
+            inner = td[td.find("<table"):]
+            cells = [c for c in re.findall(r"<td[^>]*>(.*?)</td>", inner, re.S)]
+            alternating = "（交互）" in inner
+            texts = [c for c in cells if "<img" not in c and "交互" not in c]
+            if re.search(r"終演|休憩|換気", text_of(inner)):
+                continue  # 「～第一部終演～（場内換気・休憩）」
+            names, notes = [], []
+            for c in texts:
+                parts = [squash(text_of(x)) for x in re.split(r"<br\s*/?>", c)]
+                parts = [p for p in parts if p]
+                # 一門会などの特別番組：「演目」の行、『会の名前』、開場・開演の案内は名前ではない
+                notes += [p for p in parts if not re.fullmatch(r"「[^」]*」", p) and asakusa_note_line(p)]
+                names.append([p for p in parts if not re.fullmatch(r"「[^」]*」", p) and not asakusa_note_line(p)])
+            names = [n for n in names if n]
+            if not names:
+                event = "".join(notes)
+                m = re.search(r"『([^』]+)』", event)
+                if m and not acts_of[slot] and not event_of[slot]:
+                    event_of[slot] = m.group(1)
+                continue
+            first = names[0][0]
+            part_slot = asakusa_part_slot(first) if by_parts else None
+            if part_slot:
+                slot = part_slot
+                m = re.search(r"([一二三四五1-5])部", first)
+                if m and "引き続き" not in first:
+                    parts_of[slot].append(zen_num(m.group(1)).translate(str.maketrans("一二三四五", "12345")))
+                continue
+            if first.startswith(("～", "~", "∻", "【")) or set(first) <= set("∻〜～~ー-"):
+                continue  # 「～第一部終演～」「∻∻∻」などの区切り
+            if first.startswith("《"):
+                # 《真打披露目コーナー》：昇進する組だけを出演者に（「～立合い～」以降の理事は除く）
+                flat = [x for n in names for x in n][1:]
+                honorees = []
+                for x in flat:
+                    if x.startswith(("～", "~", "〜")):
+                        break
+                    honorees.append(x)
+                if honorees:
+                    acts_of[slot].append(Act(genre, [Entry(x) for x in honorees]))
+                continue
+            if any("仲入" in x for n in names for x in n) or any("口上" in x for n in names for x in n):
+                continue
+            if alternating:
+                flat = [x for n in names for x in n]
+                entries = [Entry(x) for x in flat]
+            elif len(names) == 2 and len(names[0]) == 1 and len(names[1]) >= 2:
+                # 「すず風」「にゃん子<br>金魚」のような組
+                family = names[0][0]
+                entries = [Entry(join_duo([family + names[1][0]] + [family + x for x in names[1][1:]]))]
+            else:
+                flat = [x for n in names for x in n]
+                if len(flat) > 1 and all(x.startswith("＆") for x in flat[1:]):
+                    entries = [Entry("".join(flat))]  # 「北見伸」「＆スティファニー」
                 else:
-                    flat = [x for n in names for x in n]
-                    if len(flat) > 1 and all(x.startswith("＆") for x in flat[1:]):
-                        entries = [Entry("".join(flat))]  # 「北見伸」「＆スティファニー」
-                    else:
-                        entries = [Entry(join_duo(flat) if len(flat) > 1 else flat[0])]
-                acts.append(Act(squash(text_of(genre)), entries, alternating=alternating, tori=tori))
-            if acts:
-                if not any(a.tori for a in acts):
-                    acts[-1].tori = True
-                sec = "上席" if d <= 10 else "中席" if d <= 20 else "下席"
-                title = f"{mo}月{sec} {'昼' if slot == 'day' else '夜'}の部"
-                out.append(Program("asakusa", slot, y, mo, d, d, title, "浅草演芸ホール 公式サイト", url, acts))
+                    entries = [Entry(join_duo(flat) if len(flat) > 1 else flat[0])]
+            acts_of[slot].append(Act(genre, entries, alternating=alternating, tori=tori))
+    out = []
+    sec = "上席" if d <= 10 else "中席" if d <= 20 else "下席"
+    for slot, acts in acts_of.items():
+        if not acts:
+            continue
+        if not any(a.tori for a in acts):
+            acts[-1].tori = True
+        title = f"{mo}月{sec} {'昼' if slot == 'day' else '夜'}の部"
+        if event_of[slot]:
+            title += f"（{event_of[slot]}）"
+        elif by_parts and parts_of[slot]:
+            title += "（" + "・".join(f"{n}部" for n in parts_of[slot]) + "）"
+        out.append(Program("asakusa", slot, y, mo, d, d, title, "浅草演芸ホール 公式サイト", url, acts))
     return out
 
 
@@ -798,6 +873,9 @@ def build(programs, members, previous=None, previous_list=()):
         assoc_votes = Counter(performers[e.name]["member"]["assoc"] for a in p.acts for e in a.entries
                               if performers[e.name]["member"])
         assoc = assoc_votes.most_common(1)[0][0] if assoc_votes else None
+        total = sum(len(a.entries) for a in p.acts)
+        if assoc and assoc_votes[assoc] * 2 < total:
+            assoc = None  # 協会員が半分に満たない（漫才協会の特別興行など）
         for day in p.dates:
             if day < TODAY:
                 continue
@@ -908,10 +986,13 @@ def build(programs, members, previous=None, previous_list=()):
         assoc_genre = (profile_url and PROFILE_GEISHU.get(profile_url)) or prev_geishu.get(name) \
             or (m and m.get("genre")) or None
         kodan = not m and match_key(name).startswith(KODAN_TEIGO) and "kodan"
-        cat = category_of(assoc_genre) or member_cat or kodan or category_of(genre) or "rakugo"
+        # 名簿にも番組にも芸種がない人（漫才協会の特別興行・ゲストなど）は芸種「不明」・分類は色物
+        cat = category_of(assoc_genre) or member_cat or kodan or category_of(genre) or "iromono"
         if genre and category_of(genre) != cat:
             genre = None  # 協会の区分と合わない番組の芸種表記は使わない
-        genre_label = assoc_genre or genre or {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}[cat]
+        known_cat = assoc_genre or member_cat or kodan
+        genre_label = assoc_genre or genre or (
+            {"rakugo": "落語", "kodan": "講談", "rokyoku": "浪曲", "iromono": "色物"}[cat] if known_cat else "不明")
         profile = (f"{assoc_name}所属。" if assoc_name else "") + f"芸種は{genre_label}。"
         out_performers.append({
             "id": name, "name": name, "kana": (m and m.get("kana")) or "", "category": cat, "genre": genre_label,
